@@ -1,0 +1,22 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Coverage and profiling
+coverage.txt
+coverage.html
+*.prof
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Never commit a real key. The tests use the literal
+# nmail_live_test0000000000000000, which is not a credential.
+.env
+.env.*

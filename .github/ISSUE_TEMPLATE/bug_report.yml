@@ -1,0 +1,43 @@
+name: Bug report
+description: Something in the SDK behaves differently from the documentation
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste an API key.** A live `nmail_live_…` key can send mail as your
+        verified domain, so a leaked one is a phishing incident. Redact it, and if
+        one has already been posted anywhere, revoke it in the dashboard first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead. Include the full error, with the key redacted.
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest snippet that shows it. A failing test is ideal.
+      render: go
+    validations: {required: true}
+  - type: input
+    id: sdk
+    attributes:
+      label: SDK version
+      placeholder: "0.1.0"
+    validations: {required: true}
+  - type: input
+    id: runtime
+    attributes:
+      label: "Go version"
+      description: "Output of `go version`"
+    validations: {required: true}
+  - type: input
+    id: request_id
+    attributes:
+      label: Request id
+      description: >-
+        Every error carries one, read from the `x-request-id` response header. It
+        is the fastest way for us to find your request in the logs.

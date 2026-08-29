@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Do not stop the other versions when one fails: knowing whether a break
+      # is version-specific is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        # go.mod declares 1.21, so 1.21 is the floor that has to keep building.
+        go: ["1.21", "1.22", "1.23"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          # There is no dependency cache to warm: the module has none.
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify there are no dependencies
+        # The contract caps this SDK's runtime dependency surface at zero,
+        # because every dependency is supply-chain risk on a package that holds
+        # a live sending credential. This is the check that keeps it there.
+        run: |
+          go mod tidy
+          # go.sum is absent, not merely tracked-and-empty, when nothing is
+          # required. Either way it must carry no entries.
+          if [ -s go.sum ]; then
+            echo "go.sum is not empty; this module must have no dependencies"
+            cat go.sum
+            exit 1
+          fi
+          git diff --exit-code -- go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        # The tests need no network: they run a mock API on loopback.
+        run: go test -race ./...

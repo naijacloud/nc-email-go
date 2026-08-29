@@ -1,0 +1,22 @@
+name: Feature request
+description: Something the SDK should do and does not
+title: "[feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does the SDK get in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+  - type: markdown
+    attributes:
+      value: |
+        If this needs a change to the Naijamail API itself rather than to this
+        SDK, say so — the five SDKs are built to one shared contract, so an API
+        change lands in all of them together.

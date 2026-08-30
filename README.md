@@ -100,6 +100,23 @@ client, err := ncemail.New("nmail_live_...",
 | `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.1.0 (go/go1.x)`. |
 | `WithHTTPClient` | a fresh one | Your client is **copied**, not used directly, so the SDK can set its redirect policy without changing yours. The copy shares your `Transport`. |
 
+### Which key
+
+Two kinds work, and the SDK cannot tell them apart once it has one:
+
+- **`nc_live_…`** — a workspace API key from **Settings → API keys**, ticked for
+  the **Email send** scope. Most teams already have one: it is the same
+  credential CI deploys with. Add **Platform API** as well if the key also needs
+  to manage sending domains or suppressions.
+- **`nmail_live_…` / `nmail_test_…`** — a Naijamail-only key from **Email**. The
+  test variant is refused by the send path with a `403`, on purpose, so a
+  staging box holding production credentials fails loudly instead of mailing
+  real customers. There is no test variant of a workspace key.
+
+An `nc_pat_…` platform token is not accepted: those predate the Email send scope
+and the API refuses them on the mail routes, so the SDK refuses them at
+construction rather than a request later.
+
 `New("")` and `NewFromEnv()` both read `NAIJAMAIL_API_KEY`. Construction fails
 if the key is missing or malformed, so a bad deploy breaks at start-up rather
 than as a 401 an hour later.

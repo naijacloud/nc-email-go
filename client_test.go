@@ -21,6 +21,12 @@ func TestNewRejectsBadKeyShape(t *testing.T) {
 		{"too short", "nmail_live_short"},
 		{"illegal character", "nmail_live_abcdefg!"},
 		{"whitespace only", "   "},
+		// The pre-scopes platform token. The API refuses it on the mail routes
+		// outright — it predates the Email send scope and was never granted
+		// mail access — so it fails here rather than at send time.
+		{"platform token", "nc_pat_0123456789abcdef"},
+		// There is no test variant of a workspace key.
+		{"workspace test variant", "nc_test_0123456789abcdef"},
 	}
 
 	for _, tc := range cases {
@@ -47,6 +53,25 @@ func TestNewAcceptsLiveAndTestKeys(t *testing.T) {
 		if _, err := New(key); err != nil {
 			t.Fatalf("New(%q): %v", redactKey(key), err)
 		}
+	}
+}
+
+// A workspace API key from Settings -> API keys, carrying the Email send scope.
+func TestNewAcceptsWorkspaceKey(t *testing.T) {
+	const key = "nc_live_0123456789abcdefghij"
+
+	c, err := New(key)
+	if err != nil {
+		t.Fatalf("New(%q): %v", redactKey(key), err)
+	}
+	// Redaction has to know the prefix too, or a workspace key falls through
+	// to a bare "***" and an operator loses the one useful signal in a dump:
+	// which kind of credential this process is holding.
+	if got := redactKey(key); got != keyPrefixWorkspace+"***" {
+		t.Fatalf("redactKey = %q, want %q", got, keyPrefixWorkspace+"***")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", c), "0123456789abcdefghij") {
+		t.Fatal("the key leaked into the client's rendering")
 	}
 }
 

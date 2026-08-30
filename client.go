@@ -68,6 +68,13 @@ const (
 const (
 	keyPrefixLive = "nmail_live_"
 	keyPrefixTest = "nmail_test_"
+	// keyPrefixWorkspace is a workspace API key from Settings -> API keys,
+	// carrying the Email send scope. One credential covers mail, deploys and
+	// the platform API, so a customer who already has one does not need a
+	// second. There is no test variant of it: the live/test split belongs to
+	// the nmail_ family, and inventing a second spelling of one guarantee is
+	// how the two drift apart.
+	keyPrefixWorkspace = "nc_live_"
 
 	backoffBaseDefault = 500 * time.Millisecond
 	backoffCapDefault  = 8 * time.Second
@@ -82,7 +89,17 @@ const (
 // keyPattern is checked at construction. An empty or obviously-wrong key
 // should fail where the client is built, not as a 401 in production an hour
 // after the deploy that shipped it.
-var keyPattern = regexp.MustCompile(`^nmail_(live|test)_[A-Za-z0-9_-]{8,}$`)
+//
+// Both credential families the API accepts are allowed. It stays an allowlist
+// rather than relaxing to "any non-empty string": the check exists to catch the
+// truncated paste and the wrong-variable-name deploy, and a pattern that
+// accepts anything catches neither.
+var keyPattern = regexp.MustCompile(`^(?:nmail_(?:live|test)|nc_live)_[A-Za-z0-9_-]{8,}$`)
+
+// keyPrefixes is every prefix above, for redaction and for the User-Agent
+// guard. Both walk this rather than naming the constants, so a family added
+// later cannot be covered in one place and missed in the other.
+var keyPrefixes = []string{keyPrefixLive, keyPrefixTest, keyPrefixWorkspace}
 
 // Client is a Naijamail API client. It is safe for concurrent use, and it
 // holds no package-level state: two clients with two keys in one process do
@@ -205,7 +222,7 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	}
 	if !keyPattern.MatchString(key) {
 		// The key itself is never quoted back, here or anywhere else.
-		return nil, validationError("API key does not look like a Naijamail key (expected %s… or %s…)", keyPrefixLive, keyPrefixTest)
+		return nil, validationError("API key does not look like a Naijamail key (expected %s…, %s… or %s…)", keyPrefixLive, keyPrefixTest, keyPrefixWorkspace)
 	}
 
 	cfg := &config{
@@ -289,11 +306,12 @@ func (c *Client) BaseURL() string { return c.baseURL.String() }
 // redactKey keeps the prefix, which identifies the environment and is not
 // secret, and drops everything that is.
 func redactKey(key string) string {
+	for _, prefix := range keyPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return prefix + "***"
+		}
+	}
 	switch {
-	case strings.HasPrefix(key, keyPrefixLive):
-		return keyPrefixLive + "***"
-	case strings.HasPrefix(key, keyPrefixTest):
-		return keyPrefixTest + "***"
 	case key == "":
 		return "<none>"
 	default:
@@ -355,8 +373,10 @@ func buildUserAgent(suffix string) (string, error) {
 	// The contract forbids the key from appearing in the User-Agent. A caller
 	// building a suffix out of their configuration could paste one in by
 	// accident, and the header would then be logged by every hop in between.
-	if strings.Contains(suffix, keyPrefixLive) || strings.Contains(suffix, keyPrefixTest) {
-		return "", validationError("user agent suffix must not contain an API key")
+	for _, prefix := range keyPrefixes {
+		if strings.Contains(suffix, prefix) {
+			return "", validationError("user agent suffix must not contain an API key")
+		}
 	}
 	return ua + " " + suffix, nil
 }

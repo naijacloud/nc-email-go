@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Accept a workspace API key (`nc_live_…`) alongside the Naijamail keys. It is
+  the credential from **Settings → API keys**, and it reaches the mail API when
+  it carries the **Email send** scope — so a team that already has one for
+  deploys and the platform API does not need a second secret to send mail.
+  Redaction knows the new prefix, so a dump still shows which kind of credential
+  a process is holding. `nc_pat_…` platform tokens remain refused: they predate
+  the scope and the API rejects them on the mail routes.
+
 ## [0.1.0] - 2026-08-29
 
 First release. Implements the Naijamail SDK contract for Go.

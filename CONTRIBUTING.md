@@ -45,6 +45,21 @@ Do not add resources the server does not have.
 
 New behaviour without a test against the mock server will not be merged.
 
+## Releasing
+
+A Go module has no registry upload: the tag is the release.
+
+1. Update `Version` in `client.go` (it goes into the User-Agent).
+2. Move the `Unreleased` changelog entries under `## [x.y.z] - YYYY-MM-DD` and
+   update the link definitions at the foot of the file.
+3. Tag and push: `git tag v<version> && git push origin v<version>`.
+
+`.github/workflows/release.yml` runs CI, refuses a tag that disagrees with
+`Version` or has no changelog section, creates the GitHub release from the
+changelog section, and asks proxy.golang.org for the tag so it is installable
+at once. Never move or delete a tag after it is pushed: the proxy and the
+checksum database remember the first content they saw.
+
 ## Pull requests
 
 - One change per pull request.

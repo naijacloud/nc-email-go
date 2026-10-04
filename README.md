@@ -99,7 +99,7 @@ client, err := ncemail.New("nmail_live_...",
 | `WithBaseURL` | `https://api.naijacloud.com` | Must be `https` unless the host is `localhost`, `127.0.0.1` or `::1`. Also settable with `NAIJAMAIL_BASE_URL`. |
 | `WithTimeout` | 30s | Per attempt, not per call. Three attempts can take three times this long unless your `context` cuts it short. |
 | `WithMaxRetries` | 2 | Retries after the first attempt, so three attempts in total. |
-| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.1.0 (go/go1.x)`. |
+| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.2.0 (go/go1.x)`. |
 | `WithHTTPClient` | a fresh one | Your client is **copied**, not used directly, so the SDK can set its redirect policy without changing yours. The copy shares your `Transport`. |
 
 ### Which key

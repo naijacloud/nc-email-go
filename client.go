@@ -21,7 +21,7 @@ import (
 )
 
 // Version is this SDK's version. It appears in the User-Agent and nowhere else.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 const (
 	// DefaultBaseURL is the production API. Override it with WithBaseURL or the

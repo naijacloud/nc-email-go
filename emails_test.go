@@ -466,3 +466,55 @@ func TestSendAtExactlyTheRecipientLimit(t *testing.T) {
 		t.Fatalf("exactly %d recipients should be accepted: %v", MaxRecipients, err)
 	}
 }
+
+// A test-key message is never sent, so a "bounced" one is simulated; without
+// the flag a caller cannot tell it from a real bounce.
+func TestGetEmailExposesSandbox(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{`{"id":"1","to":"x@y.com","from":"h@a.com","subject":"Hi","status":"bounced","created_at":"2026-08-29T10:00:00.000Z","opened":false,"clicked":false,"sandbox":true}`, true},
+		{`{"id":"1","to":"x@y.com","from":"h@a.com","subject":"Hi","status":"bounced","created_at":"2026-08-29T10:00:00.000Z","opened":false,"clicked":false}`, false},
+	}
+	for _, tc := range cases {
+		m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+			jsonResponse(w, http.StatusOK, tc.body)
+		})
+		c, _ := newTestClient(t, m.URL)
+		email, err := c.Emails.Get(context.Background(), "1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if email.Sandbox != tc.want {
+			t.Fatalf("Sandbox = %v, want %v", email.Sandbox, tc.want)
+		}
+	}
+}
+
+// The server truncates tags by JavaScript's .length (UTF-16 units). Counting
+// bytes refused accented tags the server accepts; counting runes would let
+// emoji through that the server then shortens.
+func TestTagLengthCountsUTF16Units(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusAccepted, `{"id":"1","status":"queued"}`)
+	})
+	c, _ := newTestClient(t, m.URL)
+
+	ok := validSend()
+	ok.Tags = map[string]string{strings.Repeat("é", 60): strings.Repeat("ọ", 250)}
+	if _, err := c.Emails.Send(context.Background(), ok); err != nil {
+		t.Fatalf("accented tags within the limit were refused: %v", err)
+	}
+
+	for _, tags := range []map[string]string{
+		{strings.Repeat("😀", 33): "v"},
+		{"k": strings.Repeat("😀", 129)},
+	} {
+		req := validSend()
+		req.Tags = tags
+		if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
+			t.Fatalf("over-long emoji tag: err = %v, want ErrValidation", err)
+		}
+	}
+}

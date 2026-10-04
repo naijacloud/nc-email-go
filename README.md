@@ -72,8 +72,10 @@ email, err := client.Emails.Get(ctx, resp.ID)
 fmt.Println(email.Status, email.DeliveredAt) // delivered, 2026-08-29 10:00:04
 ```
 
-Those are the only two endpoints Naijamail has. Nothing here manages domains or
-API keys; do that in the dashboard.
+Those are the two endpoints this SDK covers today. The API also has batch send,
+a message list, limits, domains and suppressions (see the
+[API docs](https://naijacloud.com/docs/api/email)); they are not wrapped here
+yet.
 
 Runnable programs are in [`examples/`](examples): [send](examples/send),
 [attachment](examples/attachment), [errors](examples/errors),
@@ -109,9 +111,13 @@ Two kinds work, and the SDK cannot tell them apart once it has one:
   credential CI deploys with. Add **Platform API** as well if the key also needs
   to manage sending domains or suppressions.
 - **`nmail_live_…` / `nmail_test_…`** — a Naijamail-only key from **Email**. The
-  test variant is refused by the send path with a `403`, on purpose, so a
-  staging box holding production credentials fails loudly instead of mailing
-  real customers. There is no test variant of a workspace key.
+  test variant is **sandboxed**: the API accepts the send, returns a real id
+  and a final status, and never hands the message to a mail server. Use one in
+  staging and CI. Send from any domain you have added, or from
+  `…@test.mail.naijacloud.dev`; send *to* `delivered@`, `bounced@` or
+  `complained@test.mail.naijacloud.dev` to get that outcome. A message sent
+  this way comes back from `get` with `sandbox` set to true. There is no test
+  variant of a workspace key.
 
 An `nc_pat_…` platform token is not accepted: those predate the Email send scope
 and the API refuses them on the mail routes, so the SDK refuses them at
@@ -132,7 +138,7 @@ One error type, `*APIError`, matched against sentinels with `errors.Is`:
 resp, err := client.Emails.Send(ctx, req)
 switch {
 case errors.Is(err, ncemail.ErrPermission):
-	// Unverified From domain, a test key on the live path, or the daily quota.
+	// Unverified From domain, a key without the right scope, or the daily quota.
 case errors.Is(err, ncemail.ErrRateLimit):
 	var apiErr *ncemail.APIError
 	errors.As(err, &apiErr)
@@ -242,9 +248,8 @@ bytes rather than paths, and webhook signatures are compared in constant time.
 Client-side limits fail fast instead of spending a round trip: 50 recipients
 across To/CC/BCC, 10 MiB encoded, 25 custom headers, 10 tags.
 
-Use a `nmail_test_` key in staging. The live send path refuses it with a 403,
-deliberately, so a staging deploy holding production credentials fails loudly
-instead of mailing real customers.
+Use a `nmail_test_` key in staging and CI. It is sandboxed: sends are recorded
+and answered, never delivered, so a staging deploy cannot mail real customers.
 
 Report a vulnerability to **security@naijacloud.com**.
 

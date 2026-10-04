@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // MessageStatus is a message's delivery state.
@@ -172,6 +173,10 @@ type Email struct {
 	Clicked     bool       `json:"clicked"`
 	// FailureReason is set only when the message failed.
 	FailureReason string `json:"failure_reason,omitempty"`
+	// Sandbox is true for a message sent with a test key (nmail_test_…): it
+	// was recorded but never handed to a mail server, so a "bounced" sandbox
+	// message is a simulated outcome, not a deliverability problem.
+	Sandbox bool `json:"sandbox"`
 }
 
 // EmailsService sends and retrieves messages. Reach it through Client.Emails.
@@ -358,11 +363,14 @@ func (r *SendEmailRequest) validate() error {
 		// The server truncates an over-long tag; the SDK refuses it. A label
 		// silently shortened server-side makes the caller's own analytics
 		// disagree with the dashboard, with nothing to show why.
-		if len(key) > MaxTagKeyLength {
-			return validationError("tag key %q is %d characters, over the limit of %d", key, len(key), MaxTagKeyLength)
+		//
+		// Counted in UTF-16 units, as the server's JavaScript `.length` counts
+		// them — not bytes, which would refuse 40 "é" the server accepts.
+		if n := utf16Len(key); n > MaxTagKeyLength {
+			return validationError("tag key %q is %d characters, over the limit of %d", key, n, MaxTagKeyLength)
 		}
-		if len(value) > MaxTagValueLength {
-			return validationError("tag %q has a %d character value, over the limit of %d", key, len(value), MaxTagValueLength)
+		if n := utf16Len(value); n > MaxTagValueLength {
+			return validationError("tag %q has a %d character value, over the limit of %d", key, n, MaxTagValueLength)
 		}
 		if err := checkNoControlChars(fmt.Sprintf("tag %q", key), value); err != nil {
 			return err
@@ -388,6 +396,12 @@ func (r *SendEmailRequest) validate() error {
 // further headers — an extra Bcc, a forged Reply-To — by any hop that parses
 // the message. The server rejects these too, in MimeBuilder; the SDK rejects
 // them so the caller sees a clear local error naming the field.
+// utf16Len is the length of s as JavaScript's String.prototype.length reports
+// it, which is how the server measures tags.
+func utf16Len(s string) int {
+	return len(utf16.Encode([]rune(s)))
+}
+
 func checkNoControlChars(field, value string) error {
 	if i := strings.IndexAny(value, "\r\n\x00"); i >= 0 {
 		return validationError("%s contains a line break or NUL at position %d, which is not allowed", field, i)

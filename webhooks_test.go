@@ -26,7 +26,7 @@ func TestWebhookVerifyAccepts(t *testing.T) {
 	payload := []byte(`{"id":"evt_1","type":"email.delivered","created_at":"2026-08-29T10:00:00.000Z","data":{"email_id":"5b1e"}}`)
 	header := signPayload(t, payload, testWebhookSecret, time.Now())
 
-	event, err := VerifyWebhook(payload, header, testWebhookSecret, 0)
+	event, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestWebhookVerifyRejectsBadSignature(t *testing.T) {
 
 	for name, header := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := VerifyWebhook(payload, header, testWebhookSecret, 0)
+			_, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance)
 			if !errors.Is(err, ErrWebhookVerification) {
 				t.Fatalf("want ErrWebhookVerification, got %v", err)
 			}
@@ -87,7 +87,7 @@ func TestWebhookVerifyRejectsStaleTimestamp(t *testing.T) {
 	payload := []byte(`{"id":"evt_1","type":"email.delivered"}`)
 
 	old := signPayload(t, payload, testWebhookSecret, time.Now().Add(-10*time.Minute))
-	if _, err := VerifyWebhook(payload, old, testWebhookSecret, 0); !errors.Is(err, ErrWebhookVerification) {
+	if _, err := VerifyWebhook(payload, old, testWebhookSecret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
 		t.Fatalf("a 10-minute-old signature should be refused, got %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestWebhookVerifyRejectsStaleTimestamp(t *testing.T) {
 
 	// A clock ahead of ours is caught too, not only one behind.
 	future := signPayload(t, payload, testWebhookSecret, time.Now().Add(10*time.Minute))
-	if _, err := VerifyWebhook(payload, future, testWebhookSecret, 0); !errors.Is(err, ErrWebhookVerification) {
+	if _, err := VerifyWebhook(payload, future, testWebhookSecret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
 		t.Fatalf("a future signature should be refused, got %v", err)
 	}
 }
@@ -113,7 +113,7 @@ func TestWebhookVerifyAcceptsAnyOfSeveralSignatures(t *testing.T) {
 	goodSig := good[strings.Index(good, "v1=")+3:]
 
 	header := ts + ",v1=" + strings.Repeat("0", 64) + ",v1=" + goodSig
-	if _, err := VerifyWebhook(payload, header, testWebhookSecret, 0); err != nil {
+	if _, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestWebhookVerifyIsCaseInsensitiveOnHex(t *testing.T) {
 	header = strings.Replace(header, "T=", "t=", 1)
 	header = strings.Replace(header, "V1=", "v1=", 1)
 
-	if _, err := VerifyWebhook(payload, header, testWebhookSecret, 0); err != nil {
+	if _, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
@@ -153,7 +153,7 @@ func TestWebhookVerifyRejectsMalformedInput(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := VerifyWebhook(tc.payload, tc.header, tc.secret, 0); !errors.Is(err, ErrWebhookVerification) {
+			if _, err := VerifyWebhook(tc.payload, tc.header, tc.secret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
 				t.Fatalf("want ErrWebhookVerification, got %v", err)
 			}
 		})
@@ -166,7 +166,7 @@ func TestWebhookVerifyIgnoresUnknownHeaderKeys(t *testing.T) {
 	payload := []byte(`{"id":"evt_1"}`)
 	header := signPayload(t, payload, testWebhookSecret, time.Now()) + ",v2=abcdef,scheme=whatever"
 
-	if _, err := VerifyWebhook(payload, header, testWebhookSecret, 0); err != nil {
+	if _, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestWebhookVerifyRejectsNonJSONPayload(t *testing.T) {
 	payload := []byte(`not json`)
 	header := signPayload(t, payload, testWebhookSecret, time.Now())
 
-	event, err := VerifyWebhook(payload, header, testWebhookSecret, 0)
+	event, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance)
 	if !errors.Is(err, ErrWebhookVerification) {
 		t.Fatalf("want ErrWebhookVerification, got %v", err)
 	}
@@ -195,7 +195,59 @@ func TestWebhookVerifyDetectsSingleByteTampering(t *testing.T) {
 	copy(tampered, payload)
 	tampered[len(tampered)-3] = '9'
 
-	if _, err := VerifyWebhook(tampered, header, testWebhookSecret, 0); !errors.Is(err, ErrWebhookVerification) {
+	if _, err := VerifyWebhook(tampered, header, testWebhookSecret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
 		t.Fatalf("tampering was not detected: %v", err)
+	}
+}
+
+// TGL-741: a tolerance of zero is strict, not "use the default".
+func TestWebhookZeroToleranceIsStrict(t *testing.T) {
+	payload := []byte(`{"id":"evt_1","type":"email.delivered"}`)
+	old := signPayload(t, payload, testWebhookSecret, time.Now().Add(-10*time.Second))
+	if _, err := VerifyWebhook(payload, old, testWebhookSecret, 0); !errors.Is(err, ErrWebhookVerification) {
+		t.Fatalf("10s old with tolerance 0: want ErrWebhookVerification, got %v", err)
+	}
+	if _, err := VerifyWebhook(payload, old, testWebhookSecret, DefaultWebhookTolerance); err != nil {
+		t.Fatalf("10s old with the default tolerance: %v", err)
+	}
+}
+
+func TestWebhookNegativeToleranceIsValidationError(t *testing.T) {
+	payload := []byte(`{"id":"evt_1"}`)
+	header := signPayload(t, payload, testWebhookSecret, time.Now())
+	if _, err := VerifyWebhook(payload, header, testWebhookSecret, -time.Second); !errors.Is(err, ErrValidation) {
+		t.Fatalf("want ErrValidation, got %v", err)
+	}
+}
+
+// TGL-741: t is 1-12 ASCII digits; anything else, including values near
+// int64's maximum that once overflowed the drift arithmetic, is refused.
+func TestWebhookTimestampIsStrictDigits(t *testing.T) {
+	payload := []byte(`{"id":"evt_1"}`)
+	sig := strings.Repeat("a", 64)
+	for _, ts := range []string{
+		"+1756468800", "-1756468800", "1_756_468_800", "1756468800.0", "1e9", " ", "",
+		"9223372036854775807", "9223372036854775806", "1234567890123",
+	} {
+		header := "t=" + ts + ",v1=" + sig
+		if _, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
+			t.Fatalf("t=%q: want ErrWebhookVerification, got %v", ts, err)
+		}
+	}
+	// 12 digits is accepted by the parser and then fails only on age.
+	_, err := VerifyWebhook(payload, "t=999999999999,v1="+sig, testWebhookSecret, DefaultWebhookTolerance)
+	if !errors.Is(err, ErrWebhookVerification) || !strings.Contains(err.Error(), "tolerance") {
+		t.Fatalf("12-digit t: want a tolerance failure, got %v", err)
+	}
+}
+
+// TGL-741: only a JSON object is an event.
+func TestWebhookRejectsNonObjectPayload(t *testing.T) {
+	for _, body := range []string{`[]`, `[{"id":"evt_1"}]`, `"evt"`, `null`, `42`} {
+		payload := []byte(body)
+		header := signPayload(t, payload, testWebhookSecret, time.Now())
+		if _, err := VerifyWebhook(payload, header, testWebhookSecret, DefaultWebhookTolerance); !errors.Is(err, ErrWebhookVerification) {
+			t.Fatalf("%s: want ErrWebhookVerification, got %v", body, err)
+		}
 	}
 }

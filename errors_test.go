@@ -258,3 +258,69 @@ func TestDecodeFailureIsAServerError(t *testing.T) {
 		t.Fatalf("%d requests, want 1", m.Count())
 	}
 }
+
+// TGL-741: every unlisted 4xx is a ValidationError, never retried.
+func TestUnlistedClientErrorsAreValidation(t *testing.T) {
+	for _, status := range []int{405, 410, 413, 415, 451} {
+		m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+			jsonResponse(w, status, `{"statusCode":0,"message":"nope"}`)
+		})
+		c, _ := newTestClient(t, m.URL)
+		_, err := c.Emails.Send(context.Background(), validSend())
+		if !errors.Is(err, ErrValidation) {
+			t.Fatalf("%d: want ErrValidation, got %v", status, err)
+		}
+		if m.Count() != 1 {
+			t.Fatalf("%d: retried", status)
+		}
+	}
+}
+
+// TGL-741: the error carries the raw body text and the parsed JSON body.
+func TestAPIErrorExposesRawAndParsedBody(t *testing.T) {
+	const body = `{"statusCode":403,"message":"not allowed","error":"Forbidden"}`
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusForbidden, body)
+	})
+	c, _ := newTestClient(t, m.URL)
+	_, err := c.Emails.Send(context.Background(), validSend())
+	apiErr := mustAPIError(t, err)
+	if apiErr.RawBody != body {
+		t.Fatalf("RawBody = %q", apiErr.RawBody)
+	}
+	parsed, ok := apiErr.ParsedBody.(map[string]any)
+	if !ok || parsed["error"] != "Forbidden" {
+		t.Fatalf("ParsedBody = %#v", apiErr.ParsedBody)
+	}
+
+	m2 := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html>denied</html>"))
+	})
+	c2, _ := newTestClient(t, m2.URL)
+	_, err = c2.Emails.Send(context.Background(), validSend())
+	apiErr = mustAPIError(t, err)
+	if apiErr.RawBody != "<html>denied</html>" || apiErr.ParsedBody != nil {
+		t.Fatalf("non-JSON body: RawBody=%q ParsedBody=%#v", apiErr.RawBody, apiErr.ParsedBody)
+	}
+}
+
+// TGL-741: a 2xx that is not JSON is a ServerError carrying the raw text,
+// and it is not retried.
+func TestNonJSONSuccessIsServerErrorNotRetried(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("<html>ok</html>"))
+	})
+	c, _ := newTestClient(t, m.URL)
+	_, err := c.Emails.Send(context.Background(), validSend())
+	if !errors.Is(err, ErrServer) {
+		t.Fatalf("want ErrServer, got %v", err)
+	}
+	if mustAPIError(t, err).RawBody != "<html>ok</html>" {
+		t.Fatalf("RawBody = %q", mustAPIError(t, err).RawBody)
+	}
+	if m.Count() != 1 {
+		t.Fatalf("retried %d times", m.Count()-1)
+	}
+}

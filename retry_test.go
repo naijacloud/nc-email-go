@@ -342,3 +342,65 @@ func TestPerAttemptTimeout(t *testing.T) {
 		t.Fatalf("want ErrTimeout, got %v", err)
 	}
 }
+
+// TGL-741: Retry-After is honoured on any retryable response, not just 429.
+func TestRetryAfterHonouredOn503(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		if call == 1 {
+			w.Header().Set("Retry-After", "7")
+			jsonResponse(w, http.StatusServiceUnavailable, `{"message":"busy"}`)
+			return
+		}
+		jsonResponse(w, http.StatusAccepted, `{"id":"abc","status":"queued"}`)
+	})
+	c, log := newTestClient(t, m.URL)
+	if _, err := c.Emails.Send(context.Background(), validSend()); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if d := log.Delays(); len(d) != 1 || d[0] != 7*time.Second {
+		t.Fatalf("delays = %v, want [7s]", d)
+	}
+}
+
+// TGL-741: the exposed RateLimit.RetryAfter is clamped to 60s too.
+func TestRateLimitRetryAfterFieldIsClamped(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.Header().Set("Retry-After", "3600")
+		jsonResponse(w, http.StatusTooManyRequests, `{"message":"slow down"}`)
+	})
+	c, _ := newTestClient(t, m.URL, WithMaxRetries(0))
+	_, err := c.Emails.Send(context.Background(), validSend())
+	apiErr := mustAPIError(t, err)
+	if apiErr.RateLimit == nil || apiErr.RateLimit.RetryAfter != 60*time.Second {
+		t.Fatalf("RateLimit = %+v", apiErr.RateLimit)
+	}
+}
+
+// TGL-741: the timeout is a deadline on the whole attempt, including reading
+// the body — a server trickling bytes cannot keep an attempt open past it.
+func TestPerAttemptDeadlineCoversBodyRead(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 40; i++ {
+			if _, err := w.Write([]byte(" ")); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte(`{"id":"abc","status":"queued"}`))
+	})
+	c, _ := newTestClient(t, m.URL, WithTimeout(150*time.Millisecond), WithMaxRetries(0))
+	start := time.Now()
+	_, err := c.Emails.Send(context.Background(), validSend())
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("a trickling response: want ErrTimeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
+		t.Fatalf("attempt ran %v, past its deadline", elapsed)
+	}
+}

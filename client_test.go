@@ -142,13 +142,83 @@ func TestHTTPSEnforcement(t *testing.T) {
 	}
 }
 
-func TestBaseURLDropsQueryAndFragment(t *testing.T) {
-	c, err := New(testAPIKey, WithBaseURL("https://api.naijacloud.com/?token=leaked#frag"))
+// TGL-741: a query or fragment is refused, as in every SDK, not stripped.
+func TestBaseURLRefusesQueryAndFragment(t *testing.T) {
+	for _, raw := range []string{
+		"https://api.naijacloud.com/?token=leaked0000",
+		"https://api.naijacloud.com/#frag",
+		"https://api.naijacloud.com/?",
+		"https://api.naijacloud.com/v1?a=b#c",
+	} {
+		_, err := New(testAPIKey, WithBaseURL(raw))
+		if !errors.Is(err, ErrValidation) {
+			t.Fatalf("%q: want ErrValidation, got %v", raw, err)
+		}
+		if !strings.Contains(err.Error(), "query string") {
+			t.Fatalf("%q: error does not say why: %v", raw, err)
+		}
+	}
+}
+
+// TGL-741: a blank NAIJAMAIL_BASE_URL means "unset", not an error.
+func TestBlankBaseURLEnvIsUnset(t *testing.T) {
+	for _, v := range []string{"", "   "} {
+		t.Setenv(EnvBaseURL, v)
+		c, err := New(testAPIKey)
+		if err != nil {
+			t.Fatalf("%q: New: %v", v, err)
+		}
+		if c.BaseURL() != DefaultBaseURL {
+			t.Fatalf("%q: BaseURL = %q, want the default", v, c.BaseURL())
+		}
+	}
+}
+
+// TGL-741: an nc_pat_ token gets the contract's specific refusal, and the
+// token itself is never echoed.
+func TestNewRefusesPersonalAccessTokenWithSpecificMessage(t *testing.T) {
+	_, err := New("nc_pat_abc0000000000000000")
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("want ErrValidation, got %v", err)
+	}
+	want := "this is a personal access token (nc_pat_…), which cannot send mail; use a mail API key (nmail_live_… or nmail_test_…) or a workspace API key with the Email send scope (nc_live_…)"
+	if mustAPIError(t, err).Message != want {
+		t.Fatalf("message = %q", mustAPIError(t, err).Message)
+	}
+	if strings.Contains(err.Error(), "abc0000000000000000") {
+		t.Fatal("the token was echoed in the error")
+	}
+}
+
+// TGL-741: a key read from a file or secret store with a trailing newline is
+// trimmed, not refused — from the argument and from the environment.
+func TestKeyWhitespaceIsTrimmed(t *testing.T) {
+	c, err := New(testAPIKey + "\n")
+	if err != nil {
+		t.Fatalf("argument: %v", err)
+	}
+	if c.apiKey != testAPIKey {
+		t.Fatalf("key not trimmed: %q", c.apiKey)
+	}
+	t.Setenv(EnvAPIKey, "  "+testAPIKey+"\r\n")
+	c, err = NewFromEnv()
+	if err != nil {
+		t.Fatalf("env: %v", err)
+	}
+	if c.apiKey != testAPIKey {
+		t.Fatalf("env key not trimmed: %q", c.apiKey)
+	}
+}
+
+// TGL-741: a caller's http.Client with no Timeout still gets a per-attempt
+// deadline; zero must never mean "wait for ever".
+func TestCallerHTTPClientWithoutTimeoutGetsDefault(t *testing.T) {
+	c, err := New(testAPIKey, WithHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if strings.ContainsAny(c.BaseURL(), "?#") {
-		t.Fatalf("base URL kept a query or fragment: %q", c.BaseURL())
+	if c.httpClient.Timeout != DefaultTimeout {
+		t.Fatalf("Timeout = %v, want %v", c.httpClient.Timeout, DefaultTimeout)
 	}
 }
 
@@ -262,7 +332,9 @@ func TestOptionValidation(t *testing.T) {
 		"empty base URL":   WithBaseURL("  "),
 		"nil http client":  WithHTTPClient(nil),
 		"negative timeout": WithTimeout(-time.Second),
+		"zero timeout":     WithTimeout(0),
 		"negative retries": WithMaxRetries(-1),
+		"retries over 10":  WithMaxRetries(11),
 	}
 	for name, opt := range cases {
 		t.Run(name, func(t *testing.T) {

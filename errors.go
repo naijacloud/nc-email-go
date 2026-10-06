@@ -18,7 +18,8 @@ import (
 // binding, so a team moving from the Node SDK to this one rewrites syntax, not
 // error handling.
 var (
-	// ErrValidation covers a 400 or 422 from the server and every check the SDK
+	// ErrValidation covers a 400, 413, 422 or any other unlisted 4xx (405,
+	// 415, 451…) from the server and every check the SDK
 	// makes before a request leaves the process (those carry StatusCode 0).
 	ErrValidation = errors.New("ncemail: validation failed")
 	// ErrAuthentication is a 401: missing, malformed, unknown or revoked key.
@@ -34,7 +35,9 @@ var (
 	// ErrRateLimit is a 429. The *APIError carries a RateLimit detail with the
 	// server's Retry-After.
 	ErrRateLimit = errors.New("ncemail: rate limited")
-	// ErrServer is any 5xx, and also an unexpected 3xx (see refuseRedirects).
+	// ErrServer is any 5xx, an unexpected 3xx (see refuseRedirects), and a
+	// malformed success response: a 2xx that is not JSON, or a send answer
+	// with no id. The malformed-response cases are not retried.
 	ErrServer = errors.New("ncemail: server error")
 	// ErrConnection is a socket, DNS or TLS failure, and a cancelled context.
 	ErrConnection = errors.New("ncemail: connection failed")
@@ -68,6 +71,11 @@ type APIError struct {
 	// gateway or proxy in front of the API can answer with something that is
 	// not our error shape at all, and the bytes are then the only evidence.
 	Body []byte
+	// RawBody is Body as a string: the response text exactly as received.
+	RawBody string
+	// ParsedBody is the response body decoded as JSON (a map for the API's
+	// error shape), or nil when the body was empty or not JSON.
+	ParsedBody any
 	// RateLimit is set on a 429 and carries the server's Retry-After.
 	RateLimit *RateLimitError
 
@@ -82,8 +90,8 @@ type APIError struct {
 }
 
 // Error implements the error interface. It never contains the API key: the key
-// travels only in the Authorization header, and the URL a transport error
-// reports has had any query string stripped at construction time.
+// travels only in the Authorization header, and a base URL carrying a query
+// string is refused at construction time, so none can reach a URL here.
 func (e *APIError) Error() string {
 	prefix := ""
 	switch {
@@ -182,6 +190,8 @@ func errorFromResponse(resp *http.Response, body []byte) *APIError {
 	err := &APIError{
 		StatusCode: resp.StatusCode,
 		Body:       body,
+		RawBody:    string(body),
+		ParsedBody: parseJSONBody(body),
 		RequestID:  resp.Header.Get("X-Request-Id"),
 	}
 

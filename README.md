@@ -96,11 +96,11 @@ client, err := ncemail.New("nmail_live_...",
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `WithBaseURL` | `https://api.naijacloud.com` | Must be `https` unless the host is `localhost`, `127.0.0.1` or `::1`. Also settable with `NAIJAMAIL_BASE_URL`. |
-| `WithTimeout` | 30s | Per attempt, not per call. Three attempts can take three times this long unless your `context` cuts it short. |
-| `WithMaxRetries` | 2 | Retries after the first attempt, so three attempts in total. |
-| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.2.0 (go/go1.x)`. |
-| `WithHTTPClient` | a fresh one | Your client is **copied**, not used directly, so the SDK can set its redirect policy without changing yours. The copy shares your `Transport`. |
+| `WithBaseURL` | `https://api.naijacloud.com` | Must be `https` unless the host is `localhost`, `127.0.0.1` or `::1`. A query string or fragment is refused. Also settable with `NAIJAMAIL_BASE_URL`; a blank value counts as unset. |
+| `WithTimeout` | 30s | A deadline per attempt (connect, send and read the whole response), not per call. Three attempts can take three times this long unless your `context` cuts it short. Must be positive: `0` is refused, it does not mean "no timeout". |
+| `WithMaxRetries` | 2 | Retries after the first attempt, so three attempts in total. 0 to 10. |
+| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.3.0 (go/go1.x)`. |
+| `WithHTTPClient` | a fresh one | Your client is **copied**, not used directly, so the SDK can set its redirect policy without changing yours. The copy shares your `Transport`. If your client has no `Timeout`, the 30s default applies. |
 
 ### Which key
 
@@ -121,7 +121,11 @@ Two kinds work, and the SDK cannot tell them apart once it has one:
 
 An `nc_pat_…` platform token is not accepted: those predate the Email send scope
 and the API refuses them on the mail routes, so the SDK refuses them at
-construction rather than a request later.
+construction rather than a request later, with an error saying which keys to
+use instead.
+
+Surrounding whitespace on the key — the trailing newline a secret file usually
+carries — is trimmed.
 
 `New("")` and `NewFromEnv()` both read `NAIJAMAIL_API_KEY`. Construction fails
 if the key is missing or malformed, so a bad deploy breaks at start-up rather
@@ -148,20 +152,21 @@ case errors.Is(err, ncemail.ErrRateLimit):
 
 | Sentinel | When |
 | --- | --- |
-| `ErrValidation` | 400, 422, and everything the SDK refuses locally |
+| `ErrValidation` | 400, 413, 422, any other 4xx not listed here (405, 415, 451…), and everything the SDK refuses locally |
 | `ErrAuthentication` | 401 |
 | `ErrPermission` | 403 |
 | `ErrNotFound` | 404, and the 400 the server sends for an unknown message id |
 | `ErrConflict` | 409 |
 | `ErrRateLimit` | 429 |
-| `ErrServer` | 5xx, and an unexpected 3xx |
+| `ErrServer` | 5xx, an unexpected 3xx, and a malformed success (a 2xx that is not JSON, or a send answer with no `id` — not retried) |
 | `ErrConnection` | socket, DNS or TLS failure; a cancelled context |
 | `ErrTimeout` | 408, a client-side deadline, an expired context |
 | `ErrWebhookVerification` | a signature that does not check out |
 
 `*APIError` carries `Message`, `StatusCode`, `ErrorLabel` (the server's short
-label), `RequestID` (from `x-request-id` — quote it in a support ticket) and
-the raw `Body`. Failures the SDK catches before sending anything carry
+label), `RequestID` (from `x-request-id` — quote it in a support ticket), the
+raw response as `Body` (bytes) and `RawBody` (string), and `ParsedBody` — the
+JSON-decoded body, or nil when it was not JSON. Failures the SDK catches before sending anything carry
 `StatusCode 0`, so one error path covers both local and server rejections.
 
 `Unwrap` returns a slice, so `errors.Is(err, ncemail.ErrConnection)` and
@@ -182,6 +187,10 @@ Two API behaviours worth knowing:
 An unrecognised `MessageStatus` passes through as-is rather than failing the
 response; `status.Known()` tells you whether this SDK version knows it.
 
+`Email.CreatedAt` is a `time.Time` and `Email.DeliveredAt` a `*time.Time` (nil
+until delivery). Other SDKs use their own language's date type, so the field
+types differ between SDKs by design.
+
 ## Retries
 
 Three attempts by default, on `429`, `408`, any `5xx`, and connection or
@@ -193,14 +202,17 @@ Full jitter rather than a small random nudge because the point is to break up a
 thundering herd: when a rate limit trips for many senders at once, backoffs
 that differ only slightly retry in a clump and trip it again.
 
-`Retry-After` overrides that, whether the server sends integer seconds or an
-HTTP date, clamped to 60s.
+`Retry-After` overrides that on any retryable response that carries it (429,
+503, …), whether the server sends integer seconds or an HTTP date, clamped to
+60s — and `RateLimit.RetryAfter` is clamped the same way.
 
 This is safe because **every send carries an idempotency key**. The SDK
 generates a UUIDv4 per `Send` call and sends it on all three attempts, so a
 lost response followed by a retry cannot double-mail a customer. Set
 `SendEmailRequest.IdempotencyKey` yourself when the key must survive your own
 process restarting — an order confirmation, say — and the SDK uses it verbatim.
+An empty key means "generate one". A key is at most 255 bytes of UTF-8, and it
+is sent in the `Idempotency-Key` header only, never in the JSON body.
 
 ## Webhooks
 
@@ -217,7 +229,7 @@ event, err := ncemail.VerifyWebhook(
 	payload,
 	r.Header.Get(ncemail.WebhookSignatureHeader), // NC-Signature
 	os.Getenv("NAIJAMAIL_WEBHOOK_SECRET"),
-	0, // 0 means the default 5-minute tolerance
+	ncemail.DefaultWebhookTolerance, // 5 minutes
 )
 if errors.Is(err, ncemail.ErrWebhookVerification) {
 	http.Error(w, "invalid signature", http.StatusBadRequest)
@@ -234,6 +246,14 @@ over `"<t>.<raw body>"`. Several `v1` values may appear during a secret
 rotation and any one matching is enough. The timestamp tolerance is the replay
 window: a captured delivery stays valid only until it ages out.
 
+> **Changed in v0.3.0:** a tolerance of `0` is now **strict** (only the current
+> second passes), the same as every other Naijamail SDK. It used to mean "the
+> default". Pass `ncemail.DefaultWebhookTolerance` for five minutes. A negative
+> tolerance is an `ErrValidation` error.
+
+`t` must be 1–12 digits, `v1` hex is compared case-insensitively, and the
+payload must be a JSON object.
+
 ## Security
 
 The full list is in [SECURITY.md](SECURITY.md). In short: the key travels in
@@ -244,9 +264,16 @@ followed (a followed redirect re-sends `Authorization` to whatever host the
 `Location` names), CR/LF/NUL are refused anywhere they could break out of a
 header, the address and DKIM headers cannot be overridden, attachments are
 bytes rather than paths, and webhook signatures are compared in constant time.
+Custom header names are checked against the forbidden list after trimming, so
+`" From"` is refused like `"From"`.
+
+`Attachment.Content` is raw bytes (`[]byte`); the SDK base64-encodes it. An
+empty attachment is refused, and `ContentType`/`ContentID` are checked for
+CR/LF/NUL like the filename.
 
 Client-side limits fail fast instead of spending a round trip: 50 recipients
-across To/CC/BCC, 10 MiB encoded, 25 custom headers, 10 tags.
+across To/CC/BCC, 10 MiB of message (HTML + text + raw attachment bytes, as
+the server measures it — not the base64 JSON), 25 custom headers, 10 tags.
 
 Use a `nmail_test_` key in staging and CI. It is sandboxed: sends are recorded
 and answered, never delivered, so a staging deploy cannot mail real customers.

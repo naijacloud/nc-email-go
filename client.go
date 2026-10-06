@@ -21,7 +21,7 @@ import (
 )
 
 // Version is this SDK's version. It appears in the User-Agent and nowhere else.
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 const (
 	// DefaultBaseURL is the production API. Override it with WithBaseURL or the
@@ -50,7 +50,10 @@ const (
 const (
 	// MaxRecipients is the ceiling across To, CC and BCC combined.
 	MaxRecipients = 50
-	// MaxPayloadBytes is the largest encoded request body the API accepts.
+	// MaxPayloadBytes is the largest message the API accepts, measured the way
+	// the server measures it: the UTF-8 bytes of HTML and Text plus the raw
+	// (decoded) bytes of every attachment. Not the encoded JSON — base64 grows
+	// attachments by a third, and the server counts them decoded.
 	MaxPayloadBytes = 10 * 1024 * 1024
 	// MaxCustomHeaders bounds the Headers map.
 	MaxCustomHeaders = 25
@@ -61,8 +64,12 @@ const (
 	// dashboards that quietly disagree with the caller's own records.
 	MaxTagKeyLength   = 64
 	MaxTagValueLength = 256
-	// MaxIdempotencyKeyLength matches the API's documented header limit.
+	// MaxIdempotencyKeyLength is the longest idempotency key, in bytes of
+	// UTF-8 (len of a Go string), the same unit in every SDK.
 	MaxIdempotencyKeyLength = 255
+	// MaxRetriesLimit is the most retries WithMaxRetries accepts. Past it a
+	// caller is waiting minutes on a request that is not coming back.
+	MaxRetriesLimit = 10
 )
 
 const (
@@ -75,6 +82,13 @@ const (
 	// the nmail_ family, and inventing a second spelling of one guarantee is
 	// how the two drift apart.
 	keyPrefixWorkspace = "nc_live_"
+	// keyPrefixPAT is a personal access token. It predates the Email send
+	// scope and the API refuses it on the mail routes, so it gets its own
+	// refusal naming the keys that do work.
+	keyPrefixPAT = "nc_pat_"
+
+	// patKeyMessage is the contract's fixed wording, identical in every SDK.
+	patKeyMessage = "this is a personal access token (nc_pat_…), which cannot send mail; use a mail API key (nmail_live_… or nmail_test_…) or a workspace API key with the Email send scope (nc_live_…)"
 
 	backoffBaseDefault = 500 * time.Millisecond
 	backoffCapDefault  = 8 * time.Second
@@ -170,12 +184,16 @@ func WithHTTPClient(hc *http.Client) Option {
 	}
 }
 
-// WithTimeout sets the per-attempt HTTP timeout. It overrides the Timeout on a
-// client supplied through WithHTTPClient; without it, that client keeps its own.
+// WithTimeout sets the per-attempt deadline: connecting, sending and reading
+// the whole response must finish within it, and each retry gets a fresh one.
+// It must be positive — zero does not mean "no timeout", it is refused. It
+// overrides the Timeout on a client supplied through WithHTTPClient; without
+// it, that client keeps its own unless that is zero, in which case
+// DefaultTimeout applies.
 func WithTimeout(d time.Duration) Option {
 	return func(c *config) error {
-		if d < 0 {
-			return validationError("timeout cannot be negative")
+		if d <= 0 {
+			return validationError("timeout must be a positive duration")
 		}
 		c.timeout = d
 		c.timeoutSet = true
@@ -183,13 +201,13 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-// WithMaxRetries sets how many retries follow the first attempt. Zero disables
-// retrying. Retries stay safe at any value because every send carries an
-// idempotency key.
+// WithMaxRetries sets how many retries follow the first attempt, from 0 to
+// MaxRetriesLimit. Zero disables retrying. Retries are safe because every send
+// carries an idempotency key.
 func WithMaxRetries(n int) Option {
 	return func(c *config) error {
-		if n < 0 {
-			return validationError("max retries cannot be negative")
+		if n < 0 || n > MaxRetriesLimit {
+			return validationError("max retries must be between 0 and %d", MaxRetriesLimit)
 		}
 		c.maxRetries = n
 		return nil
@@ -219,6 +237,9 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	}
 	if key == "" {
 		return nil, validationError("no API key: pass one to New or set %s", EnvAPIKey)
+	}
+	if strings.HasPrefix(key, keyPrefixPAT) {
+		return nil, validationError("%s", patKeyMessage)
 	}
 	if !keyPattern.MatchString(key) {
 		// The key itself is never quoted back, here or anywhere else.
@@ -253,7 +274,10 @@ func New(apiKey string, opts ...Option) (*Client, error) {
 	if cfg.httpClient != nil {
 		copied := *cfg.httpClient
 		copied.CheckRedirect = refuseRedirects
-		if cfg.timeoutSet {
+		// A zero Timeout on the caller's client means "none", which would let
+		// a server trickling bytes hold an attempt open for ever. The contract
+		// requires a per-attempt deadline, so the default stands in.
+		if cfg.timeoutSet || copied.Timeout <= 0 {
 			copied.Timeout = cfg.timeout
 		}
 		httpClient = &copied
@@ -347,9 +371,12 @@ func parseBaseURL(raw string) (*url.URL, error) {
 	}
 
 	// A query or fragment on a base URL is either a mistake or an attempt to
-	// smuggle a credential into a place that ends up in logs. Neither survives.
-	u.RawQuery = ""
-	u.Fragment = ""
+	// smuggle a credential into a place that ends up in logs. Stripping it
+	// silently would send requests somewhere other than where the caller
+	// thinks, so it is refused, as in every other SDK.
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(raw, "?#") {
+		return nil, validationError("base URL must not contain a query string or a fragment")
+	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
 	return u, nil
 }
@@ -472,11 +499,22 @@ func (c *Client) attempt(ctx context.Context, method, endpoint string, body []by
 		if out == nil {
 			return nil, false
 		}
-		if err := decodeJSON(resp.Body, out); err != nil {
+		// A 2xx that is not JSON is an intermediary talking, not the API. It is
+		// a ServerError and is not retried: the request may well have landed.
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+		if readErr != nil {
+			// The per-attempt deadline (or a dropped connection) cut the body
+			// short: that is a timeout or connection failure, and retryable.
+			return transportError(ctx, readErr), ctx.Err() == nil
+		}
+		if err := json.Unmarshal(raw, out); err != nil {
 			return &APIError{
-				Message:    fmt.Sprintf("could not decode the %d response: %v", resp.StatusCode, err),
+				Message:    fmt.Sprintf("malformed response: could not decode the %d response: %v", resp.StatusCode, err),
 				StatusCode: resp.StatusCode,
 				RequestID:  resp.Header.Get("X-Request-Id"),
+				Body:       raw,
+				RawBody:    string(raw),
+				ParsedBody: parseJSONBody(raw),
 				kind:       ErrServer,
 				cause:      err,
 			}, false
@@ -488,8 +526,13 @@ func (c *Client) attempt(ctx context.Context, method, endpoint string, body []by
 	return errorFromResponse(resp, raw), retryableStatus(resp.StatusCode)
 }
 
-func decodeJSON(r io.Reader, out any) error {
-	return json.NewDecoder(io.LimitReader(r, maxResponseBodyBytes)).Decode(out)
+// parseJSONBody returns the decoded body, or nil when it is not JSON.
+func parseJSONBody(raw []byte) any {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	return v
 }
 
 // drainAndClose reads what is left of a response body before closing it, so
@@ -506,7 +549,7 @@ func drainAndClose(body io.ReadCloser) {
 // transportError classifies a failure from http.Client.Do.
 //
 // The error text can include the request URL, which is safe: the key travels
-// in a header, and parseBaseURL strips any query string from the base URL.
+// in a header, and parseBaseURL refuses a base URL with a query string.
 func transportError(ctx context.Context, err error) *APIError {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):

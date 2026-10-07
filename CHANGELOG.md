@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - Unreleased
+
+Conformance with the other four Naijamail SDKs (TGL-741).
+
+### Changed
+
+- **Breaking for webhook handlers that pass `0`:** `VerifyWebhook` /
+  `Webhooks.Verify` with a tolerance of `0` is now **strict** (only the current
+  second passes) instead of meaning "the default". Every other SDK already
+  behaved this way. Pass `ncemail.DefaultWebhookTolerance` for the five-minute
+  window. A negative tolerance is now an `ErrValidation` error.
+- A base URL with a query string or fragment is **refused** at construction
+  instead of being stripped silently.
+- `WithTimeout(0)` is refused; it no longer means "no timeout". A caller's
+  `http.Client` with no `Timeout` gets the 30s default, so every attempt has a
+  deadline.
+- `WithMaxRetries` accepts 0 to 10.
+- The 10 MiB size check measures the message as the server does — HTML + text
+  + raw attachment bytes — rather than the encoded JSON, so attachments of
+  ~7.5–10 MiB are no longer refused locally.
+- The idempotency key is sent in the `Idempotency-Key` header only; it is no
+  longer copied into the JSON body. `IdempotencyKey` now has the `json:"-"` tag.
+- An `nc_pat_…` token is refused with a message naming the keys that work.
+
+### Added
+
+- `APIError.RawBody` (the response text) and `APIError.ParsedBody` (the decoded
+  JSON, or nil), alongside the existing `Body`.
+
+### Fixed
+
+- A 2xx answer to a send with no `id` is an `ErrServer` error instead of an
+  empty response. A 2xx body cut short by the deadline is `ErrTimeout`
+  (retryable) rather than a decode error.
+- Webhook `t` must be 1–12 ASCII digits; a value near `int64`'s maximum no
+  longer reaches the drift arithmetic. A payload that is not a JSON object
+  (`null`, an array) is refused rather than returning an empty event.
+- Attachment `ContentType` and `ContentID` are checked for CR/LF/NUL.
+
 ## [0.2.0] - 2026-10-04
 
 The first tagged version, so the first one `go get` resolves

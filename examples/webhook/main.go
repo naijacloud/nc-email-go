@@ -36,7 +36,7 @@ func main() {
 			return
 		}
 
-		event, err := ncemail.VerifyWebhook(payload, r.Header.Get(ncemail.WebhookSignatureHeader), secret, 0)
+		event, err := ncemail.VerifyWebhook(payload, r.Header.Get(ncemail.WebhookSignatureHeader), secret, ncemail.DefaultWebhookTolerance)
 		if err != nil {
 			if errors.Is(err, ncemail.ErrWebhookVerification) {
 				// 400, not 500: this is a bad delivery, and answering 5xx

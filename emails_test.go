@@ -418,9 +418,8 @@ func TestClientSideLimits(t *testing.T) {
 
 	t.Run("payload size", func(t *testing.T) {
 		req := validSend()
-		// Base64 inflates by a third, so 8 MiB of bytes is over the 10 MiB
-		// encoded limit. That is exactly why the check runs after marshalling.
-		req.Attachments = []Attachment{{Filename: "big.bin", Content: make([]byte, 8*1024*1024)}}
+		// Measured like the server: html + text + decoded attachment bytes.
+		req.Attachments = []Attachment{{Filename: "big.bin", Content: make([]byte, MaxPayloadBytes)}}
 		err := func() error {
 			_, err := c.Emails.Send(context.Background(), req)
 			return err
@@ -515,6 +514,131 @@ func TestTagLengthCountsUTF16Units(t *testing.T) {
 		req.Tags = tags
 		if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
 			t.Fatalf("over-long emoji tag: err = %v, want ErrValidation", err)
+		}
+	}
+}
+
+// TGL-741: the size limit is measured as the server measures it — decoded
+// bytes — so an 8 MiB attachment (about 10.7 MiB once base64'd) is sent, and
+// a message of exactly the limit is allowed.
+func TestSizeLimitCountsDecodedBytes(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusAccepted, `{"id":"abc","status":"queued"}`)
+	})
+	c, _ := newTestClient(t, m.URL)
+
+	req := validSend()
+	req.HTML = ""
+	req.Text = "hi"
+	req.Attachments = []Attachment{{Filename: "big.bin", Content: make([]byte, 8*1024*1024)}}
+	if _, err := c.Emails.Send(context.Background(), req); err != nil {
+		t.Fatalf("8 MiB attachment refused: %v", err)
+	}
+
+	req.Attachments = []Attachment{{Filename: "exact.bin", Content: make([]byte, MaxPayloadBytes-2)}}
+	if _, err := c.Emails.Send(context.Background(), req); err != nil {
+		t.Fatalf("exactly-at-limit message refused: %v", err)
+	}
+
+	req.Attachments = []Attachment{{Filename: "over.bin", Content: make([]byte, MaxPayloadBytes-1)}}
+	if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
+		t.Fatalf("one byte over the limit: want ErrValidation, got %v", err)
+	}
+	if m.Count() != 2 {
+		t.Fatalf("%d requests reached the server, want 2", m.Count())
+	}
+}
+
+// TGL-741: the idempotency key travels in the header only, never the body.
+func TestIdempotencyKeyIsHeaderOnly(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusAccepted, `{"id":"abc","status":"queued"}`)
+	})
+	c, _ := newTestClient(t, m.URL)
+
+	req := validSend()
+	req.IdempotencyKey = "order-1024"
+	if _, err := c.Emails.Send(context.Background(), req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	got := m.Requests()[0]
+	if got.Header.Get("Idempotency-Key") != "order-1024" {
+		t.Fatalf("header = %q", got.Header.Get("Idempotency-Key"))
+	}
+	if strings.Contains(string(got.Body), "idempotency") || strings.Contains(string(got.Body), "order-1024") {
+		t.Fatalf("idempotency key leaked into the body: %s", got.Body)
+	}
+}
+
+// TGL-741: an empty key means "generate one"; the length limit counts UTF-8
+// bytes, so 128 two-byte characters (256 bytes) are over it.
+func TestIdempotencyKeyEmptyGeneratesAndLengthIsBytes(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusAccepted, `{"id":"abc","status":"queued"}`)
+	})
+	c, _ := newTestClient(t, m.URL)
+
+	req := validSend()
+	req.IdempotencyKey = ""
+	if _, err := c.Emails.Send(context.Background(), req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(m.Requests()[0].Header.Get("Idempotency-Key")) != 36 {
+		t.Fatalf("no generated key: %q", m.Requests()[0].Header.Get("Idempotency-Key"))
+	}
+
+	req.IdempotencyKey = strings.Repeat("é", 128) // 256 bytes, 128 characters
+	if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
+		t.Fatalf("256-byte key: want ErrValidation, got %v", err)
+	}
+	req.IdempotencyKey = strings.Repeat("é", 127) + "a" // 255 bytes
+	if _, err := c.Emails.Send(context.Background(), req); err != nil {
+		t.Fatalf("255-byte key refused: %v", err)
+	}
+}
+
+// TGL-741: content_type and content_id are header material too.
+func TestAttachmentContentTypeAndIDInjectionRejected(t *testing.T) {
+	c, _ := newTestClient(t, "https://api.naijacloud.com")
+	for name, att := range map[string]Attachment{
+		"content type CR":  {Filename: "a.pdf", Content: []byte("x"), ContentType: "application/pdf\r\nBcc: x@y.com"},
+		"content type NUL": {Filename: "a.pdf", Content: []byte("x"), ContentType: "application/pdf\x00"},
+		"content id LF":    {Filename: "a.png", Content: []byte("x"), ContentID: "logo\nX-Evil: 1"},
+	} {
+		req := validSend()
+		req.Attachments = []Attachment{att}
+		if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
+			t.Fatalf("%s: want ErrValidation, got %v", name, err)
+		}
+	}
+}
+
+// TGL-741: the forbidden-header check runs on the trimmed name, so padding
+// cannot smuggle a Bcc or DKIM-Signature past it.
+func TestForbiddenHeaderCheckTrimsName(t *testing.T) {
+	c, _ := newTestClient(t, "https://api.naijacloud.com")
+	for _, name := range []string{" From", "Bcc\t", " DKIM-Signature ", "\tReceived"} {
+		req := validSend()
+		req.Headers = map[string]string{name: "x"}
+		if _, err := c.Emails.Send(context.Background(), req); !errors.Is(err, ErrValidation) {
+			t.Fatalf("%q: want ErrValidation, got %v", name, err)
+		}
+	}
+}
+
+// TGL-741: a 202 with no id is not the API; it is a ServerError, not retried.
+func TestSendResponseWithoutIDIsServerError(t *testing.T) {
+	for _, body := range []string{`{"status":"queued"}`, `{"id":"","status":"queued"}`, `null`} {
+		m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+			jsonResponse(w, http.StatusAccepted, body)
+		})
+		c, _ := newTestClient(t, m.URL)
+		_, err := c.Emails.Send(context.Background(), validSend())
+		if !errors.Is(err, ErrServer) {
+			t.Fatalf("%s: want ErrServer, got %v", body, err)
+		}
+		if m.Count() != 1 {
+			t.Fatalf("%s: retried %d times", body, m.Count()-1)
 		}
 	}
 }

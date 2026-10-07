@@ -1,6 +1,7 @@
 package ncemail
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -39,19 +40,20 @@ type WebhooksService struct{}
 // Verify checks a webhook signature and returns the decoded event.
 //
 // Pass the raw request body, exactly as received, and the NC-Signature header.
-// tolerance may be zero for DefaultWebhookTolerance.
+// Pass DefaultWebhookTolerance for the standard five-minute replay window.
 //
-// Note: this scheme is fixed by the SDK contract but the control plane does
-// not emit these webhooks yet. It is implemented now so both sides ship
-// against the same definition.
+// A tolerance of zero is strict — only a timestamp in the current second
+// passes — and does NOT mean "use the default" (it did before v0.3.0). A
+// negative tolerance is an ErrValidation error. The payload must be a JSON
+// object.
 func (WebhooksService) Verify(payload []byte, signatureHeader, secret string, tolerance time.Duration) (*WebhookEvent, error) {
 	return VerifyWebhook(payload, signatureHeader, secret, tolerance)
 }
 
 // VerifyWebhook is Verify without a client. See WebhooksService.Verify.
 func VerifyWebhook(payload []byte, signatureHeader, secret string, tolerance time.Duration) (*WebhookEvent, error) {
-	if tolerance <= 0 {
-		tolerance = DefaultWebhookTolerance
+	if tolerance < 0 {
+		return nil, validationError("tolerance must be zero or more")
 	}
 	if secret == "" {
 		return nil, webhookError("a signing secret is required")
@@ -69,12 +71,16 @@ func VerifyWebhook(payload []byte, signatureHeader, secret string, tolerance tim
 	// is exactly what a replay looks like and there is no point spending the
 	// comparison on it. Absolute difference, so a clock ahead of ours is
 	// caught as well as one behind.
-	drift := time.Since(time.Unix(timestamp, 0))
+	//
+	// Whole seconds as int64, never a time.Duration: the timestamp is at most
+	// 12 digits, so the subtraction cannot overflow, where converting a far
+	// future second count to nanoseconds would.
+	drift := time.Now().Unix() - timestamp
 	if drift < 0 {
 		drift = -drift
 	}
-	if drift > tolerance {
-		return nil, webhookError("signature timestamp is %s away from now, outside the %s tolerance", drift.Round(time.Second), tolerance)
+	if drift > int64(tolerance/time.Second) {
+		return nil, webhookError("signature timestamp is %ds away from now, outside the %s tolerance", drift, tolerance)
 	}
 
 	// Signed over the raw bytes. Re-serialising a decoded object first would
@@ -105,6 +111,11 @@ func VerifyWebhook(payload []byte, signatureHeader, secret string, tolerance tim
 		return nil, webhookError("no signature matched")
 	}
 
+	// Only an object is an event. Unmarshalling `null` into a struct succeeds
+	// and would hand back an empty event; an array or string is not ours.
+	if trimmed := bytes.TrimLeft(payload, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, webhookError("payload is not a JSON object")
+	}
 	event := &WebhookEvent{}
 	if err := json.Unmarshal(payload, event); err != nil {
 		return nil, webhookError("payload is not valid JSON: %v", err)
@@ -137,6 +148,11 @@ func parseSignatureHeader(header string) (int64, []string, error) {
 
 		switch key {
 		case "t":
+			// 1 to 12 ASCII digits and nothing else: ParseInt alone accepts a
+			// sign, and a long value is only ever an attack on the arithmetic.
+			if !isTimestampDigits(value) {
+				return 0, nil, webhookError("malformed timestamp in %s", WebhookSignatureHeader)
+			}
 			parsed, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
 				return 0, nil, webhookError("malformed timestamp in %s", WebhookSignatureHeader)
@@ -157,4 +173,16 @@ func parseSignatureHeader(header string) (int64, []string, error) {
 		return 0, nil, webhookError("no v1 signature in %s", WebhookSignatureHeader)
 	}
 	return timestamp, signatures, nil
+}
+
+func isTimestampDigits(s string) bool {
+	if len(s) == 0 || len(s) > 12 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

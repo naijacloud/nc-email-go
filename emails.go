@@ -61,12 +61,14 @@ func (s MessageStatus) Known() bool {
 type Attachment struct {
 	// Filename is what the recipient sees. It must not contain CR, LF or NUL.
 	Filename string
-	// Content is the raw file bytes, base64-encoded by MarshalJSON.
+	// Content is the raw file bytes, base64-encoded by MarshalJSON. It must
+	// not be empty: the API refuses an empty attachment.
 	Content []byte
 	// ContentType is the MIME type, for example "application/pdf". Optional.
+	// It must not contain CR, LF or NUL.
 	ContentType string
 	// ContentID, when set, lets HTML reference the attachment inline as
-	// "cid:<ContentID>".
+	// "cid:<ContentID>". It must not contain CR, LF or NUL.
 	ContentID string
 }
 
@@ -127,8 +129,10 @@ type SendEmailRequest struct {
 	Tags map[string]string `json:"tags,omitempty"`
 	// IdempotencyKey deduplicates a send. Leave it empty and the SDK generates
 	// one per Send call, which is what makes retrying safe. A value set here is
-	// used as-is and never regenerated.
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// used as-is and never regenerated. At most MaxIdempotencyKeyLength bytes
+	// of UTF-8. It travels in the Idempotency-Key header only, never in the
+	// JSON body.
+	IdempotencyKey string `json:"-"`
 }
 
 // RejectedRecipient is an address the API refused, today always because it is
@@ -232,16 +236,20 @@ func (s *EmailsService) Send(ctx context.Context, req *SendEmailRequest) (*SendE
 	if err != nil {
 		return nil, validationError("could not encode the request: %v", err)
 	}
-	// Checked after encoding because base64 inflates attachments by a third,
-	// and the limit the API enforces is on what goes over the wire.
-	if len(body) > MaxPayloadBytes {
-		return nil, validationError("message is %d bytes encoded, over the %d byte limit", len(body), MaxPayloadBytes)
-	}
 
 	out := &SendEmailResponse{}
 	if err := s.client.do(ctx, http.MethodPost, "/v1/emails", body,
 		map[string]string{"Idempotency-Key": idempotencyKey}, out); err != nil {
 		return nil, err
+	}
+	// A 202 without an id is not something the API sends; whatever answered
+	// is not the API, and returning an empty id would hand the caller a value
+	// they would store and later look up for nothing.
+	if strings.TrimSpace(out.ID) == "" {
+		return nil, &APIError{
+			Message: `malformed response: "id" is missing from the send response`,
+			kind:    ErrServer,
+		}
 	}
 
 	if out.Rejected == nil {
@@ -348,9 +356,26 @@ func (r *SendEmailRequest) validate() error {
 		if err := checkNoControlChars(fmt.Sprintf("attachments[%d] filename", i), att.Filename); err != nil {
 			return err
 		}
+		if err := checkNoControlChars(fmt.Sprintf("attachments[%d] content type", i), att.ContentType); err != nil {
+			return err
+		}
+		if err := checkNoControlChars(fmt.Sprintf("attachments[%d] content id", i), att.ContentID); err != nil {
+			return err
+		}
 		if len(att.Content) == 0 {
 			return validationError("attachments[%d] has no content", i)
 		}
+	}
+
+	// Measured exactly as the server measures it: HTML and Text as UTF-8
+	// bytes plus every attachment's raw (decoded) bytes. Not the encoded JSON,
+	// which would refuse 7.5–10 MiB of attachments the server accepts.
+	size := len(r.HTML) + len(r.Text)
+	for _, att := range r.Attachments {
+		size += len(att.Content)
+	}
+	if size > MaxPayloadBytes {
+		return validationError("message is %d bytes (html + text + attachments), over the %d byte limit", size, MaxPayloadBytes)
 	}
 
 	if len(r.Tags) > MaxTags {
@@ -381,8 +406,9 @@ func (r *SendEmailRequest) validate() error {
 		if err := checkNoControlChars("idempotency key", r.IdempotencyKey); err != nil {
 			return err
 		}
+		// len of a Go string is its UTF-8 byte count, the unit every SDK uses.
 		if len(r.IdempotencyKey) > MaxIdempotencyKeyLength {
-			return validationError("idempotency key is %d characters, over the limit of %d", len(r.IdempotencyKey), MaxIdempotencyKeyLength)
+			return validationError("idempotency key is %d bytes, over the limit of %d", len(r.IdempotencyKey), MaxIdempotencyKeyLength)
 		}
 	}
 

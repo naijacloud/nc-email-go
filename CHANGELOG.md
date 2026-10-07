@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-10-07
 
 Conformance with the other four Naijamail SDKs (TGL-741).
+
+The first tagged version, so the first one `go get` resolves
+(`go get github.com/naijacloud/nc-email-go@v0.3.0`). 0.2.0 and 0.1.0 were
+written up here but never tagged, so their entries below ship in this release
+too.
 
 ### Changed
 
@@ -46,11 +51,10 @@ Conformance with the other four Naijamail SDKs (TGL-741).
   (`null`, an array) is refused rather than returning an empty event.
 - Attachment `ContentType` and `ContentID` are checked for CR/LF/NUL.
 
-## [0.2.0] - 2026-10-04
+## 0.2.0 - 2026-10-04 (never published)
 
-The first tagged version, so the first one `go get` resolves
-(`go get github.com/naijacloud/nc-email-go@v0.2.0`). 0.1.0 was written up here
-but never tagged, so its entries below are part of this release too.
+Prepared but never tagged. 0.1.0 was not tagged either, so its entries are
+folded in here, and both ship in 0.3.0.
 
 ### Added
 
@@ -101,5 +105,5 @@ First release. Implements the Naijamail SDK contract for Go.
   limits.
 - Zero dependencies, including in tests.
 
-[Unreleased]: https://github.com/naijacloud/nc-email-go/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/naijacloud/nc-email-go/releases/tag/v0.2.0
+[Unreleased]: https://github.com/naijacloud/nc-email-go/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/naijacloud/nc-email-go/releases/tag/v0.3.0

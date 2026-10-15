@@ -39,6 +39,25 @@ func TestSendSuccess(t *testing.T) {
 	if len(resp.Rejected) != 0 {
 		t.Fatalf("Rejected = %v", resp.Rejected)
 	}
+	if resp.Sandbox {
+		t.Fatal("Sandbox = true for a response without the flag")
+	}
+}
+
+func TestSendSandboxFlag(t *testing.T) {
+	m := newMockAPI(t, func(w http.ResponseWriter, r *http.Request, call int) {
+		jsonResponse(w, http.StatusAccepted, `{"id":"abc","status":"queued","sandbox":true}`)
+	})
+	c, _ := newTestClient(t, m.URL)
+
+	resp, err := c.Emails.Send(context.Background(), validSend())
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// A test-key send must be recognisable without a second Get.
+	if !resp.Sandbox {
+		t.Fatal("Sandbox = false; the API said true")
+	}
 }
 
 func TestSendWireFormat(t *testing.T) {

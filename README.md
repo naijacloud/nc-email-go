@@ -59,9 +59,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(resp.ID, resp.Status)
+	fmt.Println(resp.ID, resp.Status, resp.Sandbox)
 }
 ```
+
+`Subject` is required, and so is at least one of `HTML` and `Text`: the API
+answers `400 subject is required` or `400 provide html, text, or both`.
+`resp.Sandbox` is true when the send used a test key (see [Which key](#which-key)).
 
 `Send` returns when the API answers `202`: the message passed authorisation,
 suppression, reputation and quota checks and has been queued, not that a
@@ -99,7 +103,7 @@ client, err := ncemail.New("nmail_live_...",
 | `WithBaseURL` | `https://api.naijacloud.com` | Must be `https` unless the host is `localhost`, `127.0.0.1` or `::1`. A query string or fragment is refused. Also settable with `NAIJAMAIL_BASE_URL`; a blank value counts as unset. |
 | `WithTimeout` | 30s | A deadline per attempt (connect, send and read the whole response), not per call. Three attempts can take three times this long unless your `context` cuts it short. Must be positive: `0` is refused, it does not mean "no timeout". |
 | `WithMaxRetries` | 2 | Retries after the first attempt, so three attempts in total. 0 to 10. |
-| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.3.0 (go/go1.x)`. |
+| `WithUserAgentSuffix` | none | Appended to `nc-email-go/0.3.1 (go/go1.x)`. |
 | `WithHTTPClient` | a fresh one | Your client is **copied**, not used directly, so the SDK can set its redirect policy without changing yours. The copy shares your `Transport`. If your client has no `Timeout`, the 30s default applies. |
 
 ### Which key
@@ -116,7 +120,8 @@ Two kinds work, and the SDK cannot tell them apart once it has one:
   staging and CI. Send from any domain you have added, or from
   `…@test.mail.naijacloud.dev`; send *to* `delivered@`, `bounced@` or
   `complained@test.mail.naijacloud.dev` to get that outcome. A message sent
-  this way comes back from `get` with `sandbox` set to true. There is no test
+  this way has `Sandbox` set to true in the `Send` response and when you `Get`
+  it back. There is no test
   variant of a workspace key.
 
 An `nc_pat_…` platform token is not accepted: those predate the Email send scope

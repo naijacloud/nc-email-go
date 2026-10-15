@@ -3,8 +3,8 @@
 //	export NAIJAMAIL_WEBHOOK_SECRET=nmail_whsec_...
 //	go run ./examples/webhook
 //
-// Note: the control plane does not emit these webhooks yet. The scheme is
-// fixed so both sides ship against the same definition; see the README.
+// Naija Cloud delivers events to the endpoints you register, each signed with
+// the NC-Signature header this handler verifies; see the README.
 package main
 
 import (

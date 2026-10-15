@@ -113,12 +113,14 @@ type SendEmailRequest struct {
 	BCC []string `json:"bcc,omitempty"`
 	// ReplyTo is optional.
 	ReplyTo []string `json:"reply_to,omitempty"`
-	// Subject is sent even when empty, so the message the API receives says
-	// what the caller asked for rather than relying on a server-side default.
+	// Subject is required: the API answers an empty or whitespace-only
+	// subject with a 400 "subject is required".
 	Subject string `json:"subject"`
-	// HTML is the HTML body. Send HTML, Text or both.
+	// HTML is the HTML body. At least one of HTML and Text is required (the
+	// API answers 400 "provide html, text, or both"); send both for the best
+	// inbox placement.
 	HTML string `json:"html,omitempty"`
-	// Text is the plain-text body.
+	// Text is the plain-text body. See HTML.
 	Text string `json:"text,omitempty"`
 	// Headers are custom headers, at most MaxCustomHeaders of them. The
 	// address and signing headers cannot be overridden; see forbiddenHeaders.
@@ -158,6 +160,11 @@ type SendEmailResponse struct {
 	// can range over it without a nil check, and it is never an error — the
 	// rest of the message still went.
 	Rejected []RejectedRecipient `json:"rejected"`
+	// Sandbox is true when the send used a test key (nmail_test_…): the
+	// message was accepted and recorded and will never be handed to a mail
+	// server. Email.Sandbox carries the same flag, so a test send is
+	// recognisable without a second request.
+	Sandbox bool `json:"sandbox"`
 }
 
 // Email is one message's current state, as returned by EmailsService.Get.

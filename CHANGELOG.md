@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-15
+
+### Fixed
+
+- `Emails.Send` returns the `sandbox` flag the API sends
+  (`SendEmailResponse.Sandbox`), so a test-key send is recognisable without a
+  second `Get` (TGL-1155).
+- The README and doc comments say what the API enforces: `Subject` is required
+  and at least one of `HTML`/`Text` must be given (TGL-1156).
+
 ## [0.3.0] - 2026-10-07
 
 Conformance with the other four Naijamail SDKs (TGL-741).
@@ -105,5 +115,6 @@ First release. Implements the Naijamail SDK contract for Go.
   limits.
 - Zero dependencies, including in tests.
 
-[Unreleased]: https://github.com/naijacloud/nc-email-go/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/naijacloud/nc-email-go/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/naijacloud/nc-email-go/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/naijacloud/nc-email-go/releases/tag/v0.3.0
